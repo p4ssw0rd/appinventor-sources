@@ -199,11 +199,11 @@ public class EventDispatcher {
       }
     }
     //If the component does not have a binding event, the generic event is handled.
-    if(!dispatched){
-      if(dispatchDelegate.canDispatchEvent(component, eventName)){
+    if (!dispatched){
+      if (dispatchDelegate.canDispatchEvent(component, eventName)){
         Object[] params = new Object[args == null ? 1 : (args.length + 1)];
         params[0] = component;
-        if(args != null) {
+        if (args != null) {
           System.arraycopy(args, 0, params, 1, args.length);
         }
         dispatched = dispatchDelegate.dispatchEvent(component, null, "e$" + component.getClass().getSimpleName() + "$" + eventName, params);

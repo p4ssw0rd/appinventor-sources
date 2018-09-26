@@ -57,7 +57,7 @@ Blockly.Blocks.component_event = {
     var container = document.createElement('mutation');
     container.setAttribute('component_type', this.typeName);
     container.setAttribute('is_generic', this.isGeneric ? "true" : "false");
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       container.setAttribute('instance_name', this.instanceName);//instance name not needed
     }
 
@@ -73,7 +73,7 @@ Blockly.Blocks.component_event = {
 
     this.typeName = xmlElement.getAttribute('component_type');
     this.isGeneric = xmlElement.getAttribute('is_generic') == 'true';
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       this.instanceName = xmlElement.getAttribute('instance_name');//instance name not needed
     }
 
@@ -90,17 +90,16 @@ Blockly.Blocks.component_event = {
     var componentDb = this.getTopWorkspace().getComponentDatabase();
     if (eventType) {
       localizedEventName = componentDb.getInternationalizedEventName(eventType.name);
-    }
-    else {
+    } else {
       localizedEventName = componentDb.getInternationalizedEventName(this.eventName);
     }
 
-    if(!this.isGeneric){
+    if (!this.isGeneric){
       this.appendDummyInput('WHENTITLE').appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN)
         .appendField(this.componentDropDown, Blockly.ComponentBlock.COMPONENT_SELECTOR)
         .appendField('.' + localizedEventName);
       this.componentDropDown.setValue(this.instanceName);
-    }else{
+    } else {
       this.appendDummyInput('WHENTITLE').appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN 
         + componentDb.getInternationalizedComponentType(this.typeName) + '.' + localizedEventName);
     }
@@ -108,8 +107,7 @@ Blockly.Blocks.component_event = {
     var tooltipDescription;
     if (eventType) {
       tooltipDescription = eventType.description;
-    }
-    else {
+    } else {
       tooltipDescription = Blockly.Msg.UNDEFINED_BLOCK_TOOLTIP;
     }
     this.setTooltip(tooltipDescription);
@@ -134,7 +132,7 @@ Blockly.Blocks.component_event = {
     if (!params)  {
       params = [];
     }
-    if(this.isGeneric){
+    if (this.isGeneric){
       params = [{name:'component',type:'component'}].concat(params);
     }
     var componentDb = this.getTopWorkspace().getComponentDatabase();
@@ -246,7 +244,7 @@ Blockly.Blocks.component_event = {
     var varString = "";
     for (var i = this.isGeneric ? 1 : 0, param; param = this.getFieldValue('VAR' + i); i++) {
       // [lyn, 10/13/13] get current name from block, not from underlying event (may have changed)
-      if(i != 0){
+      if (i != 0){
         varString += " ";
       }
       varString += param;
@@ -379,11 +377,11 @@ Blockly.Blocks.component_method = {
     container.setAttribute('component_type', this.typeName);
     container.setAttribute('method_name', this.methodName);
     var isGenericString = "false";
-    if(this.isGeneric){
+    if (this.isGeneric){
       isGenericString = "true";
     }
     container.setAttribute('is_generic', isGenericString);
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       container.setAttribute('instance_name', this.instanceName);//instance name not needed
     }
     if (!this.isGeneric && this.typeName == "Clock" && Blockly.ComponentBlock.isClockMethodName(this.methodName)) {
@@ -400,7 +398,7 @@ Blockly.Blocks.component_method = {
     this.methodName = xmlElement.getAttribute('method_name');
     var isGenericString = xmlElement.getAttribute('is_generic');
     this.isGeneric = isGenericString == 'true';
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       this.instanceName = xmlElement.getAttribute('instance_name');//instance name not needed
     }
 
@@ -408,7 +406,7 @@ Blockly.Blocks.component_method = {
 
     this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
     //for non-generic blocks, set the value of the component drop down
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       this.componentDropDown.setValue(this.instanceName);
     }
     var componentDb = this.getTopWorkspace().getComponentDatabase();
@@ -420,7 +418,7 @@ Blockly.Blocks.component_method = {
     } else {
       localizedMethodName = this.methodName;
     }
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       if (this.typeName == "Clock" && Blockly.ComponentBlock.isClockMethodName(this.methodName)) {
         var timeUnitDropDown = Blockly.ComponentBlock.createClockAddDropDown();
         this.appendDummyInput()
@@ -695,11 +693,11 @@ Blockly.Blocks.component_set_get = {
     container.setAttribute('set_or_get', this.setOrGet);
     container.setAttribute('property_name', this.propertyName);
     var isGenericString = "false";
-    if(this.isGeneric){
+    if (this.isGeneric){
       isGenericString = "true";
     }
     container.setAttribute('is_generic', isGenericString);
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       container.setAttribute('instance_name', this.instanceName);//instance name not needed
     }
     return container;
@@ -713,10 +711,10 @@ Blockly.Blocks.component_set_get = {
     this.propertyObject = this.getPropertyObject(this.propertyName);
     var isGenericString = xmlElement.getAttribute('is_generic');
     this.isGeneric = isGenericString == "true";
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       this.instanceName = xmlElement.getAttribute('instance_name');//instance name not needed
     }
-    if(this.setOrGet == "set"){
+    if (this.setOrGet == "set"){
       this.setColour(Blockly.ComponentBlock.COLOUR_SET);
     } else {
       this.setColour(Blockly.ComponentBlock.COLOUR_GET);
@@ -748,11 +746,11 @@ Blockly.Blocks.component_set_get = {
 
     this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
 
-    if(this.setOrGet == "get") {
+    if (this.setOrGet == "get") {
       //add output plug for get blocks
       this.setOutput(true);
 
-      if(!this.isGeneric) {
+      if (!this.isGeneric) {
         //non-generic get
         this.appendDummyInput()
           .appendField(this.componentDropDown, Blockly.ComponentBlock.COMPONENT_SELECTOR)
@@ -773,7 +771,7 @@ Blockly.Blocks.component_set_get = {
       //a notches for set block
       this.setPreviousStatement(true);
       this.setNextStatement(true);
-      if(!this.isGeneric) {
+      if (!this.isGeneric) {
         this.appendValueInput("VALUE")
           .appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_SETTER_TITLE_SET)
           .appendField(this.componentDropDown, Blockly.ComponentBlock.COMPONENT_SELECTOR)
@@ -799,7 +797,7 @@ Blockly.Blocks.component_set_get = {
     }
 
     //for non-generic blocks, set the value of the component drop down
-    if(!this.isGeneric) {
+    if (!this.isGeneric) {
       this.componentDropDown.setValue(this.instanceName);
     }
     //set value of property drop down

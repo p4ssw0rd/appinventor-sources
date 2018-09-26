@@ -495,7 +495,7 @@ Blockly.WorkspaceSvg.prototype.buildComponentMap = function(warnings, errors, fo
     if (block.type == 'procedures_defnoreturn' || block.type == 'procedures_defreturn' || block.type == 'global_declaration') {
       map.globals.push(block);
     } else if (block.category == 'Component' && block.type == 'event') {
-      if(block.isGeneric){
+      if (block.isGeneric){
         map.globals.push(block);
         continue;
       }
@@ -889,7 +889,7 @@ Blockly.WorkspaceSvg.prototype.buildComponentMap = function(warnings, errors, fo
       if(block.blockType != "event") {
         continue;
       }
-      if(block.isGeneric){
+      if (block.isGeneric){
         map.globals.push(block);
         continue;
       }

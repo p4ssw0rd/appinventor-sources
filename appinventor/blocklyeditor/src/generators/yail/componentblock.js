@@ -28,7 +28,7 @@ goog.provide('Blockly.Yail.componentblock');
  */
 Blockly.Yail.component_event = function() {
 
-  if(this.isGeneric){
+  if (this.isGeneric) {
     var args = ([{name:'component',type:'component'}].concat(this.getParameters()))
       .map(function (param) {
         return Blockly.Yail.YAIL_LOCAL_VAR_TAG+param.name;
@@ -212,13 +212,13 @@ Blockly.Yail.methodHelper = function(methodBlock, name, methodName, generic) {
 
 Blockly.Yail.component_set_get = function() {
   if(this.setOrGet == "set") {
-    if(this.isGeneric) {
+    if (this.isGeneric) {
       return Blockly.Yail.genericSetproperty.call(this);
     } else {
       return Blockly.Yail.setproperty.call(this);
     }
   } else {
-    if(this.isGeneric) {
+    if (this.isGeneric) {
       return Blockly.Yail.genericGetproperty.call(this);
     } else {
       return Blockly.Yail.getproperty.call(this);

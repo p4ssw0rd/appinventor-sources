@@ -221,8 +221,8 @@ Blockly.Drawer.prototype.componentTypeToXMLArray = function(typeName) {
   var componentInfo = this.workspace_.getComponentDatabase().getType(typeName);
 
   //create generic event blocks
-  goog.object.forEach(componentInfo.eventDictionary, function(event, name){
-    if(!event.deprecated){
+  goog.object.forEach(componentInfo.eventDictionary, function(event, name) {
+    if (!event.deprecated){
       Array.prototype.push.apply(xmlArray, this.blockTypeToXMLArray('component_event', {
         component_type: typeName, event_name: name, is_generic: 'true'
       }));

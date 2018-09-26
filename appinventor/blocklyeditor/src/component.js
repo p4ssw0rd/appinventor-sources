@@ -155,7 +155,7 @@ Blockly.Component.buildComponentMap = function(warnings, errors, forRepl, compil
       if(block.blockType != "event") {
         continue;
       }
-      if(block.isGeneric){
+      if (block.isGeneric){
         map.globals.push(block);
         continue;
       }
