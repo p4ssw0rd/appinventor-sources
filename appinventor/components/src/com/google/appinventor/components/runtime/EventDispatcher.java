@@ -185,7 +185,7 @@ public class EventDispatcher {
    * @param eventName  name of event being raised
    * @param args  arguments to the event handler
    */
-  public static boolean dispatchEvent(final Component component, String eventName, Object...args) {
+  public static boolean dispatchEvent(Component component, String eventName, Object...args) {
     if (DEBUG) {
       Log.i("EventDispatcher", "Trying to dispatch event " + eventName);
     }
