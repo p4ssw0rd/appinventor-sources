@@ -84,7 +84,6 @@ Blockly.Blocks.component_event = {
 
     this.setColour(Blockly.ComponentBlock.COLOUR_EVENT);
 
-    this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
     var localizedEventName;
     var eventType = this.getEventTypeObject();
     var componentDb = this.getTopWorkspace().getComponentDatabase();
@@ -95,12 +94,13 @@ Blockly.Blocks.component_event = {
     }
 
     if (!this.isGeneric){
+      this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
       this.appendDummyInput('WHENTITLE').appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN)
         .appendField(this.componentDropDown, Blockly.ComponentBlock.COMPONENT_SELECTOR)
         .appendField('.' + localizedEventName);
       this.componentDropDown.setValue(this.instanceName);
     } else {
-      this.appendDummyInput('WHENTITLE').appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN 
+      this.appendDummyInput('WHENTITLE').appendField(Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN_ANY 
         + componentDb.getInternationalizedComponentType(this.typeName) + '.' + localizedEventName);
     }
     this.setParameterOrientation(horizParams);
@@ -404,9 +404,9 @@ Blockly.Blocks.component_method = {
 
     this.setColour(Blockly.ComponentBlock.COLOUR_METHOD);
 
-    this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
     //for non-generic blocks, set the value of the component drop down
     if (!this.isGeneric) {
+      this.componentDropDown = Blockly.ComponentBlock.createComponentDropDown(this);
       this.componentDropDown.setValue(this.instanceName);
     }
     var componentDb = this.getTopWorkspace().getComponentDatabase();

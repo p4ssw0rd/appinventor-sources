@@ -1005,6 +1005,7 @@ Blockly.Msg.en.switch_language_to_english = {
 
     Blockly.Msg.LANG_COMPONENT_BLOCK_HELPURL = '';
     Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN = 'when ';
+    Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN_ANY = 'when any ';
     Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_DO = 'do';
 
     Blockly.Msg.LANG_COMPONENT_BLOCK_METHOD_HELPURL = '';

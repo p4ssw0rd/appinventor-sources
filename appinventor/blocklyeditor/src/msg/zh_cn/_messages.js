@@ -967,6 +967,7 @@ Blockly.Msg.zh.switch_language_to_chinese_cn = {
     Blockly.Msg.UNDEFINED_BLOCK_TOOLTIP = "该代码块未定义，删除此代码块!";
     Blockly.Msg.LANG_COMPONENT_BLOCK_HELPURL = '';
     Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN = '当';
+    Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_WHEN_ANY = '当任意';
     Blockly.Msg.LANG_COMPONENT_BLOCK_TITLE_DO = '执行';
 
     Blockly.Msg.LANG_COMPONENT_BLOCK_METHOD_HELPURL = '';
