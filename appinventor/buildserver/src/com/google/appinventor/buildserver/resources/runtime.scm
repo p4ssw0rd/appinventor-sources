@@ -1,5 +1,5 @@
 ;;; Copyright 2009-2011 Google, All Rights reserved
-;;; Copyright 2011-2013 MIT, All rights reserved
+;;; Copyright 2011-2018 MIT, All rights reserved
 ;;; Released under the MIT License https://raw.github.com/mit-cml/app-inventor/master/mitlicense.txt
 
 ;;; These are the functions that define the YAIL (Young Android Intermediate Language) runtime They
@@ -289,21 +289,31 @@
 (define-syntax define-form
   (syntax-rules ()
     ((_ class-name form-name)
-     (define-form-internal class-name form-name 'com.google.appinventor.components.runtime.Form #f))))
+     (define-form-internal class-name form-name 'com.google.appinventor.components.runtime.Form #f #t))
+    ((_ class-name form-name classic-theme)
+     (define-form-internal class-name form-name 'com.google.appinventor.components.runtime.Form #f classic-theme))))
 
 (define-syntax define-repl-form
   (syntax-rules ()
     ((_ class-name form-name)
-     (define-form-internal class-name form-name 'com.google.appinventor.components.runtime.ReplForm #t))))
+     (define-form-internal class-name form-name 'com.google.appinventor.components.runtime.ReplForm #t #f))))
 
 (define-syntax define-form-internal
   (syntax-rules ()
-    ((_ class-name form-name subclass-name isrepl)
+    ((_ class-name form-name subclass-name isrepl classic-theme)
      (begin
        (module-extends subclass-name)
        (module-name class-name)
        (module-static form-name)
        (require <com.google.youngandroid.runtime>)
+
+       (define (get-simple-name object)
+         (*:getSimpleName (*:getClass object)))
+
+       (define (onCreate icicle :: android.os.Bundle) :: void
+         ;(android.util.Log:i "AppInventorCompatActivity" "in YAIL oncreate")
+         (com.google.appinventor.components.runtime.AppInventorCompatActivity:setClassicModeFromYail classic-theme)
+         (invoke-special subclass-name (this) 'onCreate icicle))
 
        (define *debug-form* #f)
 
@@ -431,6 +441,27 @@
                                  (begin
                                    (apply handler (gnu.lists.LList:makeList args 0))
                                    #t)
+                                 ;; PermissionException should be caught by a permissions-aware component and
+                                 ;; handled correctly at the point it is caught. However, older extensions
+                                 ;; might not be updated yet for SDK 23's dangerous permissions model, so if
+                                 ;; an exception bubbles all the way up to here we can still catch and report
+                                 ;; it. However, the best context we have for the PermissionDenied event is
+                                 ;; that it occurred in the just-exited event handler code.
+                                 (exception com.google.appinventor.components.runtime.errors.PermissionException
+                                  (begin
+                                    (exception:printStackTrace)
+                                    ;; Test to see if the event we are handling is the
+                                    ;; PermissionDenied of the current form. If so, then we will
+                                    ;; need to avoid re-invoking PermissionDenied.
+                                    (if (and (eq? (this) componentObject)
+                                             (equal? eventName "PermissionNeeded"))
+                                        ;; Error is occurring in the PermissionDenied handler, so we
+                                        ;; use the more general exception handler to prevent going
+                                        ;; into an infinite loop.
+                                        (process-exception exception)
+                                        ((this):PermissionDenied componentObject eventName
+                                                                 (exception:getPermissionNeeded)))
+                                    #f))
                                  (exception java.lang.Throwable
                                   (begin
                                     (android-log-form (exception:getMessage))
@@ -445,6 +476,48 @@
                          (as com.google.appinventor.components.runtime.HandlesEventDispatching (this))
                          registeredComponentName eventName)
                        #f))))
+
+       (define (dispatchGenericEvent componentObject :: com.google.appinventor.components.runtime.Component
+                                     eventName :: java.lang.String
+                                     notAlreadyHandled :: boolean
+                                     args :: java.lang.Object[]) :: void
+         ; My first attempt was to use the gen-generic-event-name
+         ; here, but unfortunately the version of Kawa that we use
+         ; does not correctly import functions from the runtime module
+         ; into the form. The macro expands, but the symbol-append
+         ; function is not found. Below is an "optimization" that
+         ; concatenates the strings first and then calls
+         ; string->symbol, which is effectively the same thing. Most
+         ; of the logic then follows that of dispatchEvent above.
+         (let* ((handler-symbol (string->symbol (string-append "any$" (get-simple-name componentObject) "$" eventName)))
+                (handler (lookup-in-form-environment handler-symbol)))
+           (if handler
+               (try-catch
+                (begin
+                  (apply handler (cons componentObject (cons notAlreadyHandled (gnu.lists.LList:makeList args 0))))
+                  #t)
+                (exception com.google.appinventor.components.runtime.errors.PermissionException
+                 (begin
+                   (exception:printStackTrace)
+                   ;; Test to see if the event we are handling is the
+                   ;; PermissionDenied of the current form. If so, then we will
+                   ;; need to avoid re-invoking PermissionDenied.
+                   (if (and (eq? (this) componentObject)
+                            (equal? eventName "PermissionNeeded"))
+                       ;; Error is occurring in the PermissionDenied handler, so we
+                       ;; use the more general exception handler to prevent going
+                       ;; into an infinite loop.
+                       (process-exception exception)
+                       ((this):PermissionDenied componentObject eventName
+                        (exception:getPermissionNeeded)))
+                   #f))
+                (exception java.lang.Throwable
+                 (begin
+                   (android-log-form (exception:getMessage))
+;;; Comment out the line below to inhibit a stack trace on a RunTimeError
+                   (exception:printStackTrace)
+                   (process-exception exception)
+                   #f))))))
 
        (define (lookup-handler componentName eventName)
          (lookup-in-form-environment
@@ -478,7 +551,7 @@
                      var-val-pairs))
 
          ;; Create each component and set its corresponding field
-         (define (init-components component-descriptors)
+         (define (create-components component-descriptors)
            (for-each (lambda (component-info)
                        (let ((component-name (caddr component-info))
                              (init-thunk (cadddr component-info))
@@ -493,14 +566,10 @@
                            ;; Add the mapping from component name -> component object to the
                            ;; form-environment
                            (add-to-form-environment component-name component-object))))
-                     component-descriptors)
-           ;; Now that all the components are constructed we can call
-           ;; their init-thunk and their Initialize methods.  We need
-           ;; to do this after all the construction steps because the
-           ;; init-thunk (i.e. design-time initializations) and
-           ;; Initialize methods may contain references to other
-           ;; components.
-           ;;
+                     component-descriptors))
+
+         ;; Initialize all of the components
+         (define (init-components component-descriptors)
            ;; First all the init-thunks
            (for-each (lambda (component-info)
                        (let ((component-name (caddr component-info))
@@ -545,20 +614,30 @@
          (register-events events-to-register)
 
          (try-catch
-          (begin
+          (let ((components (reverse components-to-create)))
             ;; We need this binding because the block parser sends this symbol
             ;; to represent an uninitialized value
             ;; We have to explicity write #!null here, rather than
             ;; *the-null-value* because that external defintion hasn't happened yet
             (add-to-global-vars '*the-null-value* (lambda () #!null))
+            ;; The Form has been created (we're in its code), so we should run
+            ;; do-after-form-creation thunks now. This is important because we
+            ;; need the theme set before creating components.
+            (for-each force (reverse form-do-after-creation))
+            (create-components components)
             ;; These next three clauses need to be in this order:
             ;; Properties can't be set until after the global variables are
             ;; assigned.   And some properties can't be set after the components are
             ;; created: For example, the form's layout can't be changed after the
             ;; components have been installed.  (This gives an error.)
             (init-global-variables (reverse global-vars-to-create))
-            (for-each force (reverse form-do-after-creation))
-            (init-components (reverse components-to-create)))
+            ;; Now that all the components are constructed we can call
+            ;; their init-thunk and their Initialize methods.  We need
+            ;; to do this after all the construction steps because the
+            ;; init-thunk (i.e. design-time initializations) and
+            ;; Initialize methods may contain references to other
+            ;; components.
+            (init-components components))
           (exception com.google.appinventor.components.runtime.errors.YailRuntimeError
                      ;;(android-log-form "Caught exception in define-form ")
                      (process-exception exception))))))))
@@ -579,6 +658,14 @@
     (syntax-case stx ()
       ((_ component-name event-name)
        (datum->syntax-object stx #'(symbol-append component-name '$ event-name))))))
+
+;;; (gen-generic-event-name Button Click)
+;;; ==> any$Button$Click
+(define-syntax gen-generic-event-name
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ component-type event-name)
+       (datum->syntax-object stx #'(symbol-append 'any$ component-type '$ event-name))))))
 
 ;;; define-event-helper looks suspiciously like define, but we need it because
 ;;; if we use define directly in the define-event definition below, the call
@@ -647,6 +734,13 @@
                 'event-name)
                ;; If it's not the REPL the form's $define() method will do the registration
                (add-to-events 'component-name 'event-name)))))))
+
+(define-syntax define-generic-event
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ component-type event-name args . body)
+       #`(begin
+           (define-event-helper ,(gen-generic-event-name #`component-type #`event-name) args body))))))
 
 ;;;; def
 
@@ -767,26 +861,100 @@
         (*:addParent (KawaEnvironment:getCurrent) *test-environment*)
         (set! *test-global-var-environment* (gnu.mapping.Environment:make 'test-global-var-env)))))
 
-(define-syntax foreach
-  (syntax-rules ()
-    ((_ lambda-arg-name body-form list)
-     (yail-for-each (lambda (lambda-arg-name) body-form) list))))
 
+;; Note: (Jeff Schiller) The macro below is intentionally
+;; unhygienic. We need to make sure that if there is a *yail-break*
+;; form inside bodyform that it does not get shadowed by the macro
+;; (which it would if this was a hygienic macro).
 
-(define-syntax forrange
-  (syntax-rules ()
-    ((_ lambda-arg-name body-form start end step)
-     (yail-for-range (lambda (lambda-arg-name) body-form) start end step))))
+(define-macro (foreach arg-name bodyform list-of-args)
+  `(call-with-current-continuation
+    (lambda (*yail-break*)
+      (let ((proc (lambda (,arg-name) ,bodyform)))
+        (yail-for-each proc ,list-of-args)))))
 
-(define-syntax while
+;; This yail procedure should be called only if "*yail-break*" is used
+;; outside of a foreach, forrange or while macro.  The blocks editor
+;; should give an error if the break block is placed outside of a
+;; loop.  So the only way this yail procedure would be called should
+;; be by running do-it on an isolated break block.  See
+;; blocklyeditor/src/warninghandler.js checkIsNotInLoop
+
+(define (*yail-break* ignore)
+  (signal-runtime-error
+     "Break should be run only from within a loop"
+     "Bad use of Break"))
+
+;; Also unhygienic (see comment above about foreach)
+
+(define-macro (forrange lambda-arg-name body-form start end step)
+  `(call-with-current-continuation
+    (lambda (*yail-break*)
+      (yail-for-range (lambda (,lambda-arg-name) ,body-form) ,start ,end ,step))))
+
+;; Also unhygienic (see comment above about foreach)
+
+;; The structure of this macro is important. If the argument to
+;; call-with-current-continuation is a lambda expression, then Kawa
+;; attempts to optimize it. This optimization fails spectacularly when
+;; the lambda expression is tail-recursive (like ours is). By binding
+;; the lambda expression to a variable and then calling via the
+;; variable, the optimizer is not invoked and the code produced, while
+;; not optmized, is correct.
+
+(define-macro (while condition body . rest)
+  `(let ((cont (lambda (*yail-break*)
+                 (let *yail-loop* ()
+                   (if ,condition
+                       (begin (begin ,body . ,rest)
+                              (*yail-loop*))
+                       #!null)))))
+     (call-with-current-continuation cont)))
+
+;; Below are hygienic versions of the forrange, foreach and while
+;; macros. They are here to be "future aware". A future version of
+;; MIT App Inventor will use these hygienic versions which require
+;; and additional argument, and therefore different YAIL generation
+
+(define-syntax foreach-with-break
   (syntax-rules ()
-    ((_ condition body ...)
-     (let loop ()
-       (if condition
-       (begin
-         body ...
-         (loop))
-       *the-null-value*)))))
+    ((_ escapename arg-name bodyform list-of-args)
+     (call-with-current-continuation
+      (lambda (escapename)
+	(let ((proc (lambda (arg-name) bodyform)))
+	  (yail-for-each proc list-of-args)))))))
+
+  ;; To call this foreach-with-break macro, we must pass a symbol that
+  ;; will be the name of an escape procedure referenced in the body of
+  ;; the proc argument.  For example
+  ;;
+  ;; (foreach-with-break
+  ;;  *yail-break*
+  ;;  x
+  ;;  (if (= x 17)
+  ;;      (begin (display "escape") (*yail-break* #f))
+  ;;      (begin (display x) (display " "))
+  ;;      )
+  ;;  '(100 200 17 300))
+
+(define-syntax forrange-with-break
+  (syntax-rules ()
+    ((_ escapename lambda-arg-name body-form start end step)
+     (call-with-current-continuation
+      (lambda (escapename)
+	(yail-for-range (lambda (lambda-arg-name) body-form) start end step))))))
+
+(define-syntax while-with-break
+  (syntax-rules ()
+    ((_ escapename condition body ...)
+     (call-with-current-continuation
+      (lambda (escapename)
+	(let loop ()
+	  (if condition
+	      (begin
+		body ...
+		(loop))
+	      *the-null-value*)))))))
 
 ;;; RUNTIME library
 
@@ -809,6 +977,7 @@
 (define-alias YailList <com.google.appinventor.components.runtime.util.YailList>)
 (define-alias YailNumberToString <com.google.appinventor.components.runtime.util.YailNumberToString>)
 (define-alias YailRuntimeError <com.google.appinventor.components.runtime.errors.YailRuntimeError>)
+(define-alias PermissionException <com.google.appinventor.components.runtime.errors.PermissionException>)
 (define-alias JavaJoinListOfStrings <com.google.appinventor.components.runtime.util.JavaJoinListOfStrings>)
 
 (define-alias JavaCollection <java.util.Collection>)
@@ -877,10 +1046,13 @@
   (let ((coerced-args (coerce-args method-name arglist typelist)))
     (let ((result
            (if (all-coercible? coerced-args)
-               (apply invoke
-                      `(,(lookup-in-current-form-environment component-name)
-                        ,method-name
-                        ,@coerced-args))
+               (try-catch
+                (apply invoke
+                       `(,(lookup-in-current-form-environment component-name)
+                         ,method-name
+                         ,@coerced-args))
+                (exception PermissionException
+                           (*:dispatchPermissionDeniedEvent (SimpleForm:getActiveForm) (lookup-in-current-form-environment component-name) method-name exception)))
                (generate-runtime-type-error method-name arglist))))
       ;; TODO(markf): this should probably be generalized but for now this is OK, I think
       (sanitize-component-data result))))
@@ -1079,7 +1251,10 @@
   (let ((coerced-arg (coerce-arg property-value property-type)))
     (android-log (format #f "coerced property value was: ~A " coerced-arg))
     (if (all-coercible? (list coerced-arg))
-        (invoke comp prop-name coerced-arg)
+        (try-catch
+         (invoke comp prop-name coerced-arg)
+         (exception PermissionException
+                    (*:dispatchPermissionDeniedEvent (SimpleForm:getActiveForm) comp prop-name exception)))
         (generate-runtime-type-error prop-name (list property-value)))))
 
 
@@ -1777,6 +1952,7 @@ Block name               Kawa implementation
 - remove list item        (yail-list-remove-item! yail-list index)
 - length of list          (yail-list-length yail-list)
 - copy list               (yail-list-copy list)
+- reverse list            (yail-list-reverse list)
 - list to csv row         (yail-list-to-csv-row list)
 - list to csv table       (yail-list-to-csv-table list)
 - list from csv row       (yail-list-from-csv-row text)
@@ -1794,6 +1970,7 @@ Block name               Kawa implementation
 - is list?                (yail-list? object)
 - is empty?               (yail-list-empty? yail-list)
 - lookup in pairs         (yail-alist-lookup key yail-list-of-pairs default)
+- join with separator     (yail-list-join-with-separator yail-list separator)
 
 Lists in App Inventor are implemented as "Yail lists".  A Yail list is
 a Java pair whose car is a distinguished token
@@ -1870,6 +2047,13 @@ list, use the make-yail-list constructor with no arguments.
   (cond ((yail-list-empty? yl) (make YailList))
         ((not (pair? yl)) yl)
         (else (YailList:makeList (map yail-list-copy (yail-list-contents yl))))))
+
+;;; does a shallow copy of the yail list yl with its order reversed.
+;;; yl should be a YailList
+(define (yail-list-reverse yl)
+  (if (not (yail-list? yl))
+    (signal-runtime-error "Argument value to \"reverse list\" must be a list" "Expecting list")
+    (insert-yail-list-header (reverse (yail-list-contents yl)))))
 
 ;;; converts a yail list to a CSV-formatted table and returns the text.
 ;;; yl should be a YailList, each element of which is a YailList as well.
@@ -2214,7 +2398,11 @@ list, use the make-yail-list constructor with no arguments.
   (and (yail-list? candidate-pair)
        (= (length (yail-list-contents candidate-pair)) 2)))
 
-
+;;; Joins list elements into a string separated by separator
+;;; Important to convert yail-list to yail-list-contents so that *list*
+;;; is not included as first string.
+(define (yail-list-join-with-separator yail-list separator)
+  (join-strings (yail-list-contents yail-list) separator))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2538,6 +2726,11 @@ list, use the make-yail-list constructor with no arguments.
                  (try-catch
                   (list "OK"
                         (get-display-representation (force promise)))
+                  (exception PermissionException
+                             (exception:printStackTrace)
+                             (list "NOK"
+                                   (string-append "Failed due to missing permission: "
+                                                  (exception:getPermissionNeeded))))
                   (exception YailRuntimeError
                              (android-log (exception:getMessage))
                              (list "NOK"
@@ -2627,3 +2820,8 @@ list, use the make-yail-list constructor with no arguments.
                  ((equal? (car sl) " ") "<space>")
                  (#t (car sl)))))
         (cons sp (clarify1 (cdr sl))))))
+
+;; Support for WebRTC communication between browser and Companion
+;; as well as learning which assets we need to load
+
+(define-alias AssetFetcher <com.google.appinventor.components.runtime.util.AssetFetcher>)

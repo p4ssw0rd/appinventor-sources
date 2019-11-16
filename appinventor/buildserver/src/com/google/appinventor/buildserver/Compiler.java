@@ -1,6 +1,6 @@
 // -*- mode: java; c-basic-offset: 2; -*-
 // Copyright 2009-2011 Google, All Rights reserved
-// Copyright 2011-2018 MIT, All rights reserved
+// Copyright 2011-2019 MIT, All rights reserved
 // Released under the Apache License, Version 2.0
 // http://www.apache.org/licenses/LICENSE-2.0
 
@@ -8,6 +8,8 @@ package com.google.appinventor.buildserver;
 
 import com.google.appinventor.buildserver.util.AARLibraries;
 import com.google.appinventor.buildserver.util.AARLibrary;
+import com.google.appinventor.components.common.ComponentDescriptorConstants;
+import com.google.appinventor.components.common.YaVersion;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
 import com.google.common.base.Strings;
@@ -25,6 +27,7 @@ import org.codehaus.jettison.json.JSONObject;
 import org.codehaus.jettison.json.JSONTokener;
 
 import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -33,11 +36,14 @@ import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
+import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -78,42 +84,19 @@ public final class Compiler {
 
   private static final String SLASH = File.separator;
   private static final String COLON = File.pathSeparator;
+  private static final String ZIPSLASH = "/";
 
   public static final String RUNTIME_FILES_DIR = "/" + "files" + "/";
 
-  // Build info constants. Used for permissions, libraries, assets and activities.
-  // Must match ComponentProcessor.ARMEABI_V7A_SUFFIX
-  private static final String ARMEABI_V7A_SUFFIX = "-v7a";
-  // Must match Component.ASSET_DIRECTORY
-  private static final String ASSET_DIRECTORY = "component";
-  // Must match ComponentListGenerator.ASSETS_TARGET
-  private static final String ASSETS_TARGET = "assets";
-  // Must match ComponentListGenerator.ACTIVITIES_TARGET
-  private static final String ACTIVITIES_TARGET = "activities";
-  // Must match ComponentListGenerator.LIBRARIES_TARGET
-  public static final String LIBRARIES_TARGET = "libraries";
-  // Must match ComponentListGenerator.NATIVE_TARGET
-  public static final String NATIVE_TARGET = "native";
-  // Must match ComponentListGenerator.PERMISSIONS_TARGET
-  private static final String PERMISSIONS_TARGET = "permissions";
-  // Must match ComponentListGenerator.BROADCAST_RECEIVERS_TARGET
-  private static final String BROADCAST_RECEIVERS_TARGET = "broadcastReceivers";
-  // Must match ComponentListGenerator.ANDROIDMINSDK_TARGET
-  private static final String ANDROIDMINSDK_TARGET = "androidMinSdk";
-  
-  // TODO(Will): Remove the following target once the deprecated
-  //             @SimpleBroadcastReceiver annotation is removed. It should
-  //             should remain for the time being because otherwise we'll break
-  //             extensions currently using @SimpleBroadcastReceiver.
-  //
-  // Must match ComponentListGenerator.BROADCAST_RECEIVER_TARGET
-  private static final String BROADCAST_RECEIVER_TARGET = "broadcastReceiver";
 
   // Native library directory names
   private static final String LIBS_DIR_NAME = "libs";
   private static final String ARMEABI_DIR_NAME = "armeabi";
   private static final String ARMEABI_V7A_DIR_NAME = "armeabi-v7a";
+  private static final String ARM64_V8A_DIR_NAME = "arm64-v8a";
+  private static final String X86_64_DIR_NAME = "x86_64";
 
+  private static final String ASSET_DIR_NAME = "assets";
   private static final String EXT_COMPS_DIR_NAME = "external_comps";
 
   private static final String DEFAULT_APP_NAME = "";
@@ -131,12 +114,8 @@ public final class Compiler {
       RUNTIME_FILES_DIR + "acra-4.4.0.jar";
   private static final String ANDROID_RUNTIME =
       RUNTIME_FILES_DIR + "android.jar";
-  private static final String[] SUPPORT_JARS = new String[] {
-    RUNTIME_FILES_DIR + "appcompat-v7.jar",
-    RUNTIME_FILES_DIR + "internal_impl.jar",
-    RUNTIME_FILES_DIR + "support-annotations.jar",
-    RUNTIME_FILES_DIR + "support-v4.jar"
-  };
+  private static final String[] SUPPORT_JARS;
+  private static final String[] SUPPORT_AARS;
   private static final String COMP_BUILD_INFO =
       RUNTIME_FILES_DIR + "simple_components_build_info.json";
   private static final String DX_JAR =
@@ -145,6 +124,8 @@ public final class Compiler {
       RUNTIME_FILES_DIR + "kawa.jar";
   private static final String SIMPLE_ANDROID_RUNTIME_JAR =
       RUNTIME_FILES_DIR + "AndroidRuntime.jar";
+  private static final String APKSIGNER_JAR =
+      RUNTIME_FILES_DIR + "apksigner.jar";
 
   private static final String LINUX_AAPT_TOOL =
       "/tools/linux/aapt";
@@ -177,7 +158,22 @@ public final class Compiler {
   private final ConcurrentMap<String, Set<String>> minSdksNeeded =
       new ConcurrentHashMap<String, Set<String>>();
   private final Set<String> uniqueLibsNeeded = Sets.newHashSet();
-  
+  private final ConcurrentMap<String, Map<String, Map<String, Set<String>>>> conditionals =
+      new ConcurrentHashMap<>();
+  /**
+   * Maps component type names to a set of blocks used in the project from the
+   * named component. For example, Hello Purr might produce:
+   *
+   * <code>
+   *   {
+   *     "Button": {"Click", "Image", "Text"},
+   *     "Screen": {"Title"},
+   *     "Sound": {"Play", "Source", "Vibrate"}
+   *   }
+   * </code>
+   */
+  private final Map<String, Set<String>> compBlocks;
+
   /**
    * Set of exploded AAR libraries.
    */
@@ -225,8 +221,45 @@ public final class Compiler {
   private static final String NO_USER_CODE_ERROR =
       "Error: No user code exists.\n";
 
+  static {
+    List<String> aars = new ArrayList<>();
+    List<String> jars = new ArrayList<>();
+    try (BufferedReader in = new BufferedReader(new InputStreamReader(Compiler.class.getResourceAsStream(RUNTIME_FILES_DIR + "aars.txt")))) {
+      String line;
+      while ((line = in.readLine()) != null) {
+        if (!line.isEmpty()) {
+          aars.add(line);
+        } else {
+          break;
+        }
+      }
+    } catch (IOException e) {
+      System.err.println("Fatal error on startup reading aars.txt");
+      e.printStackTrace();
+      System.exit(1);
+    }
+    SUPPORT_AARS = aars.toArray(new String[0]);
+    try (BufferedReader in = new  BufferedReader(new InputStreamReader(Compiler.class.getResourceAsStream(RUNTIME_FILES_DIR + "jars.txt")))) {
+      String line;
+      while ((line = in.readLine()) != null) {
+        if (!line.isEmpty()) {
+          jars.add(RUNTIME_FILES_DIR + line);
+        } else {
+          break;
+        }
+      }
+    } catch (IOException e) {
+      System.err.println("Fatal error on startup reading jars.txt");
+      e.printStackTrace();
+      System.exit(1);
+    }
+    SUPPORT_JARS = jars.toArray(new String[0]);
+  }
+
   private final int childProcessRamMb;  // Maximum ram that can be used by a child processes, in MB.
   private final boolean isForCompanion;
+  private final boolean isForEmulator;
+  private final boolean includeDangerousPermissions;
   private final Project project;
   private final PrintStream out;
   private final PrintStream err;
@@ -256,7 +289,7 @@ public final class Compiler {
   @VisibleForTesting
   void generatePermissions() {
     try {
-      loadJsonInfo(permissionsNeeded, PERMISSIONS_TARGET);
+      loadJsonInfo(permissionsNeeded, ComponentDescriptorConstants.PERMISSIONS_TARGET);
       if (project != null) {    // Only do this if we have a project (testing doesn't provide one :-( ).
         LOG.log(Level.INFO, "usesLocation = " + project.getUsesLocation());
         if (project.getUsesLocation().equals("True")) { // Add location permissions if any WebViewer requests it
@@ -278,6 +311,8 @@ public final class Compiler {
       userErrors.print(String.format(ERROR_IN_STAGE, "Permissions"));
     }
 
+    mergeConditionals(conditionals.get(ComponentDescriptorConstants.PERMISSIONS_TARGET), permissionsNeeded);
+
     int n = 0;
     for (String type : permissionsNeeded.keySet()) {
       n += permissionsNeeded.get(type).size();
@@ -286,18 +321,80 @@ public final class Compiler {
     System.out.println("Permissions needed, n = " + n);
   }
 
+  /**
+   * Merge the given {@code values} into the set at {@code key} in {@code map}.
+   * If {@code key} is not set, then its value is treated as the empty set and
+   * the key is set to a copy of {@code values}. {@code values} can be unmodifiable.
+   * @param map A mapping of strings to sets of strings, representing component
+   *            types to, e.g., permissions
+   * @param key The key to evaluate, e.g., "Texting"
+   * @param values The values associated with the key that need to be merged, e.g.,
+   *               {"android.permission.SEND_SMS"}
+   */
+  private void setOrMerge(Map<String, Set<String>> map, String key, Set<String> values) {
+    if (map.containsKey(key)) {
+      map.get(key).addAll(values);
+    } else {
+      map.put(key, new HashSet<>(values));
+    }
+  }
+
+  /**
+   * Merge the conditionals from the given conditional map into the existing
+   * map of required infos.
+   * @param conditionalMap A map of component type names to maps of blocks to
+   *                       sets of values (e.g., permission names)
+   * @param infoMap A map of component type names to sets of values (e.g.,
+   *                permission names)
+   */
+  private void mergeConditionals(Map<String, Map<String, Set<String>>> conditionalMap,
+                                 Map<String, Set<String>> infoMap) {
+    if (conditionalMap != null) {
+      if (isForCompanion) {
+        // For the companion, we take all of the conditionals
+        for (Map.Entry<String, Map<String, Set<String>>> entry : conditionalMap.entrySet()) {
+          for (Set<String> items : entry.getValue().values()) {
+            setOrMerge(infoMap, entry.getKey(), items);
+          }
+        }
+        // If necessary, we can remove permissions at this point (e.g., Texting, PhoneCall)
+      } else {
+        // We walk the set of components and the blocks used in the project. If
+        // any <component, block> combination is in the set of conditionals,
+        // then we merge the associated set of values into the existing set. If
+        // no existing set exists, we create one.
+        for (Map.Entry<String, Set<String>> entry : compBlocks.entrySet()) {
+          if (conditionalMap.containsKey(entry.getKey())) {
+            Map<String, Set<String>> blockPermsMap = conditionalMap.get(entry.getKey());
+            for (String blockName : entry.getValue()) {
+              Set<String> blockPerms = blockPermsMap.get(blockName);
+              if (blockPerms != null) {
+                Set<String> typePerms = infoMap.get(entry.getKey());
+                if (typePerms != null) {
+                  typePerms.addAll(blockPerms);
+                } else {
+                  infoMap.put(entry.getKey(), new HashSet<>(blockPerms));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Just used for testing
   @VisibleForTesting
   Map<String,Set<String>> getPermissions() {
     return permissionsNeeded;
   }
-  
+
   // Just used for testing
   @VisibleForTesting
   Map<String, Set<String>> getBroadcastReceivers() {
     return broadcastReceiversNeeded;
   }
-  
+
   // Just used for testing
   @VisibleForTesting
   Map<String, Set<String>> getActivities() {
@@ -310,7 +407,7 @@ public final class Compiler {
   @VisibleForTesting
   void generateLibNames() {
     try {
-      loadJsonInfo(libsNeeded, LIBRARIES_TARGET);
+      loadJsonInfo(libsNeeded, ComponentDescriptorConstants.LIBRARIES_TARGET);
     } catch (IOException e) {
       // This is fatal.
       e.printStackTrace();
@@ -334,8 +431,11 @@ public final class Compiler {
    */
   @VisibleForTesting
   void generateNativeLibNames() {
+    if (isForEmulator) {  // no libraries for emulator
+      return;
+    }
     try {
-      loadJsonInfo(nativeLibsNeeded, NATIVE_TARGET);
+      loadJsonInfo(nativeLibsNeeded, ComponentDescriptorConstants.NATIVE_TARGET);
     } catch (IOException e) {
       // This is fatal.
       e.printStackTrace();
@@ -360,7 +460,7 @@ public final class Compiler {
   @VisibleForTesting
   void generateAssets() {
     try {
-      loadJsonInfo(assetsNeeded, ASSETS_TARGET);
+      loadJsonInfo(assetsNeeded, ComponentDescriptorConstants.ASSETS_TARGET);
     } catch (IOException e) {
       // This is fatal.
       e.printStackTrace();
@@ -385,7 +485,7 @@ public final class Compiler {
   @VisibleForTesting
   void generateActivities() {
     try {
-      loadJsonInfo(activitiesNeeded, ACTIVITIES_TARGET);
+      loadJsonInfo(activitiesNeeded, ComponentDescriptorConstants.ACTIVITIES_TARGET);
     } catch (IOException e) {
       // This is fatal.
       e.printStackTrace();
@@ -410,7 +510,7 @@ public final class Compiler {
   @VisibleForTesting
   void generateBroadcastReceivers() {
     try {
-      loadJsonInfo(broadcastReceiversNeeded, BROADCAST_RECEIVERS_TARGET);
+      loadJsonInfo(broadcastReceiversNeeded, ComponentDescriptorConstants.BROADCAST_RECEIVERS_TARGET);
     }
     catch (IOException e) {
       // This is fatal.
@@ -421,8 +521,10 @@ public final class Compiler {
       e.printStackTrace();
       userErrors.print(String.format(ERROR_IN_STAGE, "BroadcastReceivers"));
     }
+
+    mergeConditionals(conditionals.get(ComponentDescriptorConstants.BROADCAST_RECEIVERS_TARGET), broadcastReceiversNeeded);
   }
-  
+
   /*
    * TODO(Will): Remove this method once the deprecated @SimpleBroadcastReceiver
    *             annotation is removed. This should remain for the time being so
@@ -432,7 +534,7 @@ public final class Compiler {
   @VisibleForTesting
   void generateBroadcastReceiver() {
     try {
-      loadJsonInfo(componentBroadcastReceiver, BROADCAST_RECEIVER_TARGET);
+      loadJsonInfo(componentBroadcastReceiver, ComponentDescriptorConstants.BROADCAST_RECEIVER_TARGET);
     }
     catch (IOException e) {
       // This is fatal.
@@ -447,7 +549,7 @@ public final class Compiler {
 
   private void generateMinSdks() {
     try {
-      loadJsonInfo(minSdksNeeded, ANDROIDMINSDK_TARGET);
+      loadJsonInfo(minSdksNeeded, ComponentDescriptorConstants.ANDROIDMINSDK_TARGET);
     } catch (IOException|JSONException e) {
       // This is fatal.
       e.printStackTrace();
@@ -478,22 +580,59 @@ public final class Compiler {
    * @param out The writer the style will be written to.
    * @param name The name of the new style.
    * @param parent The parent style to inherit from.
+   * @param sdk The SDK version that the theme overlays
    * @throws IOException if the writer cannot be written to.
    */
-  private static void writeTheme(Writer out, String name, String parent) throws IOException {
+  private static void writeTheme(Writer out, String name, String parent, int sdk) throws IOException {
     out.write("<style name=\"");
     out.write(name);
     out.write("\" parent=\"");
     out.write(parent);
     out.write("\">\n");
-    out.write("<item name=\"windowActionBar\">true</item>\n");
     out.write("<item name=\"colorPrimary\">@color/colorPrimary</item>\n");
     out.write("<item name=\"colorPrimaryDark\">@color/colorPrimaryDark</item>\n");
     out.write("<item name=\"colorAccent\">@color/colorAccent</item>\n");
-    // Handles theme for Notifier
-    out.write("<item name=\"android:dialogTheme\">@style/AIDialog</item>\n");
-    // Handles theme for DatePicker/TimePicker
-    out.write("<item name=\"android:alertDialogTheme\">@style/AIAlertDialog</item>\n");
+    boolean holo = sdk >= 11 && sdk < 21;
+    boolean needsClassicSwitch = false;
+    if (!parent.equals("android:Theme")) {
+      out.write("<item name=\"windowActionBar\">true</item>\n");
+      out.write("<item name=\"android:windowActionBar\">true</item>\n");  // Honeycomb ActionBar
+      if (parent.contains("Holo") || holo) {
+        out.write("<item name=\"android:actionBarStyle\">@style/AIActionBar</item>\n");
+        out.write("<item name=\"actionBarStyle\">@style/AIActionBar</item>\n");
+      }
+      // Handles theme for Notifier
+      out.write("<item name=\"android:dialogTheme\">@style/AIDialog</item>\n");
+      out.write("<item name=\"dialogTheme\">@style/AIDialog</item>\n");
+      out.write("<item name=\"android:cacheColorHint\">#000</item>\n");  // Fixes crash in ListPickerActivity
+    } else {
+      out.write("<item name=\"switchStyle\">@style/ClassicSwitch</item>\n");
+      needsClassicSwitch = true;
+    }
+    out.write("</style>\n");
+    if (needsClassicSwitch) {
+      out.write("<style name=\"ClassicSwitch\" parent=\"Widget.AppCompat.CompoundButton.Switch\">\n");
+      if (sdk == 23) {
+        out.write("<item name=\"android:background\">@drawable/abc_control_background_material</item>\n");
+      } else {
+        out.write("<item name=\"android:background\">@drawable/abc_item_background_holo_light</item>\n");
+      }
+      out.write("</style>\n");
+    }
+  }
+
+  private static void writeActionBarStyle(Writer out, String name, String parent,
+      boolean blackText) throws IOException {
+    out.write("<style name=\"");
+    out.write(name);
+    out.write("\" parent=\"");
+    out.write(parent);
+    out.write("\">\n");
+    out.write("<item name=\"android:background\">@color/colorPrimary</item>\n");
+    out.write("<item name=\"android:titleTextStyle\">@style/AIActionBarTitle</item>\n");
+    out.write("</style>\n");
+    out.write("<style name=\"AIActionBarTitle\" parent=\"android:TextAppearance.Holo.Widget.ActionBar.Title\">\n");
+    out.write("<item name=\"android:textColor\">" + (blackText ? "#000" : "#fff") + "</item>\n");
     out.write("</style>\n");
   }
 
@@ -506,6 +645,13 @@ public final class Compiler {
     out.write("<item name=\"colorPrimary\">@color/colorPrimary</item>\n");
     out.write("<item name=\"colorPrimaryDark\">@color/colorPrimaryDark</item>\n");
     out.write("<item name=\"colorAccent\">@color/colorAccent</item>\n");
+    if (parent.contains("Holo")) {
+      // workaround for weird window border effect
+      out.write("<item name=\"android:windowBackground\">@android:color/transparent</item>\n");
+      out.write("<item name=\"android:gravity\">center</item>\n");
+      out.write("<item name=\"android:layout_gravity\">center</item>\n");
+      out.write("<item name=\"android:textColor\">@color/colorPrimary</item>\n");
+    }
     out.write("</style>\n");
   }
 
@@ -518,12 +664,28 @@ public final class Compiler {
     String colorAccent = project.getAccentColor() == null ? "#00728A" : project.getAccentColor();
     String theme = project.getTheme() == null ? "Classic" : project.getTheme();
     String actionbar = project.getActionBar();
-    String parentTheme = theme.replace("AppTheme", "Theme.AppCompat");
-    if (!"true".equalsIgnoreCase(actionbar)) {
-      if (parentTheme.endsWith("DarkActionBar")) {
-        parentTheme = parentTheme.replace("DarkActionBar", "NoActionBar");
+    String parentTheme;
+    boolean isClassicTheme = "Classic".equals(theme) || suffix.isEmpty();  // Default to classic theme prior to SDK 11
+    boolean needsBlackTitleText = false;
+    boolean holo = "-v11".equals(suffix) || "-v14".equals(suffix);
+    if (isClassicTheme) {
+      parentTheme = "android:Theme";
+    } else {
+      if (suffix.equals("-v11")) {  // AppCompat needs SDK 14, so we explicitly name Holo for SDK 11 through 13
+        parentTheme = theme.replace("AppTheme", "android:Theme.Holo");
+        needsBlackTitleText = theme.contains("Light") && !theme.contains("DarkActionBar");
+        if (theme.contains("Light")) {
+          parentTheme = "android:Theme.Holo.Light";
+        }
       } else {
-        parentTheme += ".NoActionBar";
+        parentTheme = theme.replace("AppTheme", "Theme.AppCompat");
+      }
+      if (!"true".equalsIgnoreCase(actionbar)) {
+        if (parentTheme.endsWith("DarkActionBar")) {
+          parentTheme = parentTheme.replace("DarkActionBar", "NoActionBar");
+        } else {
+          parentTheme += ".NoActionBar";
+        }
       }
     }
     colorPrimary = cleanColor(colorPrimary, true);
@@ -549,8 +711,17 @@ public final class Compiler {
       out = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(stylesXml), "UTF-8"));
       out.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
       out.write("<resources>\n");
-      if (!parentTheme.startsWith("Classic")) {
-        writeTheme(out, "AppTheme", parentTheme);
+
+      writeTheme(out, "AppTheme", parentTheme,
+          suffix.isEmpty() ? 7 : Integer.parseInt(suffix.substring(2)));
+      if (!isClassicTheme) {
+        if (holo) {  // Handle Holo
+          if (parentTheme.contains("Light")) {
+            writeActionBarStyle(out, "AIActionBar", "android:Widget.Holo.Light.ActionBar", needsBlackTitleText);
+          } else {
+            writeActionBarStyle(out, "AIActionBar", "android:Widget.Holo.ActionBar", needsBlackTitleText);
+          }
+        }
         if (parentTheme.contains("Light")) {
           writeDialogTheme(out, "AIDialog", "Theme.AppCompat.Light.Dialog");
           writeDialogTheme(out, "AIAlertDialog", "Theme.AppCompat.Light.Dialog.Alert");
@@ -559,12 +730,49 @@ public final class Compiler {
           writeDialogTheme(out, "AIAlertDialog", "Theme.AppCompat.Dialog.Alert");
         }
       }
+
       out.write("<style name=\"TextAppearance.AppCompat.Button\">\n");
       out.write("<item name=\"textAllCaps\">false</item>\n");
       out.write("</style>\n");
       out.write("</resources>\n");
       out.close();
     } catch(IOException e) {
+      return false;
+    }
+    return true;
+  }
+
+  private boolean createNetworkConfigXml(File configDir) {
+    File networkConfig = new File(configDir, "network_security_config.xml");
+    try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new FileOutputStream(networkConfig)))) {
+      out.println("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+      out.println("<network-security-config>");
+      out.println("<base-config cleartextTrafficPermitted=\"true\">");
+      out.println("<trust-anchors>");
+      out.println("<certificates src=\"system\"/>");
+      out.println("</trust-anchors>");
+      out.println("</base-config>");
+      out.println("</network-security-config>");
+    } catch(IOException e) {
+      return false;
+    }
+    return true;
+  }
+
+  /*
+   * Creates the provider_paths file which is used to setup a "Files" content
+   * provider.
+   */
+  private boolean createProviderXml(File providerDir) {
+    File paths = new File(providerDir, "provider_paths.xml");
+    try {
+      BufferedWriter out = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(paths), "UTF-8"));
+      out.write("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+      out.write("<paths xmlns:android=\"http://schemas.android.com/apk/res/android\">\n");
+      out.write("   <external-path name=\"external_files\" path=\".\"/>\n");
+      out.write("</paths>\n");
+      out.close();
+    } catch (IOException e) {
       return false;
     }
     return true;
@@ -581,6 +789,9 @@ public final class Compiler {
     String projectName = project.getProjectName();
     String vCode = (project.getVCode() == null) ? DEFAULT_VERSION_CODE : project.getVCode();
     String vName = (project.getVName() == null) ? DEFAULT_VERSION_NAME : cleanName(project.getVName());
+    if (includeDangerousPermissions) {
+      vName += "u";
+    }
     String aName = (project.getAName() == null) ? DEFAULT_APP_NAME : cleanName(project.getAName());
     LOG.log(Level.INFO, "VCode: " + project.getVCode());
     LOG.log(Level.INFO, "VName: " + project.getVName());
@@ -597,7 +808,7 @@ public final class Compiler {
           "package=\"" + packageName + "\" " +
           // TODO(markf): uncomment the following line when we're ready to enable publishing to the
           // Android Market.
-         "android:versionCode=\"" + vCode +"\" " + "android:versionName=\"" + vName + "\" " +
+          "android:versionCode=\"" + vCode +"\" " + "android:versionName=\"" + vName + "\" " +
           ">\n");
 
       // If we are building the Wireless Debugger (AppInventorDebugger) add the uses-feature tag which
@@ -615,7 +826,11 @@ public final class Compiler {
           out.write("  <uses-feature android:name=\"android.hardware.touchscreen\" android:required=\"false\" />\n");
           out.write("  <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />\n");
           out.write("  <uses-feature android:name=\"android.hardware.camera.autofocus\" android:required=\"false\" />\n");
-          out.write("  <uses-feature android:name=\"android.hardware.wifi\" />\n"); // We actually require wifi
+          if (isForEmulator) {
+            out.write("  <uses-feature android:name=\"android.hardware.wifi\" android:required=\"false\" />\n"); // We actually require wifi
+          } else {
+            out.write("  <uses-feature android:name=\"android.hardware.wifi\" />\n"); // We actually require wifi
+          }
       }
 
       int minSdk = Integer.parseInt((project.getMinSdk() == null) ? DEFAULT_MIN_SDK : project.getMinSdk());
@@ -636,6 +851,15 @@ public final class Compiler {
         permissions.addAll(compPermissions);
       }
 
+      // Remove Google's Forbidden Permissions
+      // This code is crude because we had to do this on short notice
+      if (isForCompanion && !includeDangerousPermissions) {
+        permissions.remove("android.permission.RECEIVE_SMS");
+        permissions.remove("android.permission.SEND_SMS");
+        permissions.remove("android.permission.PROCESS_OUTGOING_CALLS");
+        permissions.remove("android.permission.CALL_PHONE");
+      }
+
       for (String permission : permissions) {
         out.write("  <uses-permission android:name=\"" + permission + "\" />\n");
       }
@@ -648,7 +872,8 @@ public final class Compiler {
       // The market will use the following to filter apps shown to devices that don't support
       // the specified SDK version.  We right now support building for minSDK 4.
       // We might also want to allow users to specify minSdk version or targetSDK version.
-      out.write("  <uses-sdk android:minSdkVersion=\"" + minSdk + "\" />\n");
+      out.write("  <uses-sdk android:minSdkVersion=\"" + minSdk + "\" android:targetSdkVersion=\"" +
+          YaVersion.TARGET_SDK_VERSION + "\" />\n");
 
       out.write("  <application ");
 
@@ -659,11 +884,13 @@ public final class Compiler {
       // TODONE(jis): Turned off debuggable. No one really uses it and it represents a security
       // risk for App Inventor App end-users.
       out.write("android:debuggable=\"false\" ");
+      // out.write("android:debuggable=\"true\" "); // DEBUGGING
       if (aName.equals("")) {
         out.write("android:label=\"" + projectName + "\" ");
       } else {
         out.write("android:label=\"" + aName + "\" ");
       }
+      out.write("android:networkSecurityConfig=\"@xml/network_security_config\" ");
       out.write("android:icon=\"@drawable/ya\" ");
       if (isForCompanion) {              // This is to hook into ACRA
         out.write("android:name=\"com.google.appinventor.components.runtime.ReplApplication\" ");
@@ -671,10 +898,13 @@ public final class Compiler {
         out.write("android:name=\"com.google.appinventor.components.runtime.multidex.MultiDexApplication\" ");
       }
       // Write theme info if we are not using the "Classic" theme (i.e., no theme)
-      if (!"Classic".equalsIgnoreCase(project.getTheme())) {
+      if (true) {
+//      if (!"Classic".equalsIgnoreCase(project.getTheme())) {
         out.write("android:theme=\"@style/AppTheme\" ");
       }
       out.write(">\n");
+
+      out.write("<uses-library android:name=\"org.apache.http.legacy\" android:required=\"false\" />");
 
       for (Project.SourceDescriptor source : project.getSources()) {
         String formClassName = source.getQualifiedName();
@@ -705,8 +935,7 @@ public final class Compiler {
 
         // The keyboard option prevents the app from stopping when a external (bluetooth)
         // keyboard is attached.
-        out.write("android:configChanges=\"orientation|keyboardHidden|keyboard\">\n");
-
+        out.write("android:configChanges=\"orientation|screenSize|keyboardHidden|keyboard\">\n");
 
         out.write("      <intent-filter>\n");
         out.write("        <action android:name=\"android.intent.action.MAIN\" />\n");
@@ -728,42 +957,66 @@ public final class Compiler {
           out.write("      </intent-filter>\n");
         }
         out.write("    </activity>\n");
+
+        // Companion display a splash screen... define it's activity here
+        if (isMain && isForCompanion) {
+          out.write("    <activity android:name=\"com.google.appinventor.components.runtime.SplashActivity\" android:screenOrientation=\"behind\" android:configChanges=\"keyboardHidden|orientation\">\n");
+          out.write("      <intent-filter>\n");
+          out.write("        <action android:name=\"android.intent.action.MAIN\" />\n");
+          out.write("      </intent-filter>\n");
+          out.write("    </activity>\n");
+        }
       }
-      
+
       // Collect any additional <application> subelements into a single set.
       Set<Map.Entry<String, Set<String>>> subelements = Sets.newHashSet();
       subelements.addAll(activitiesNeeded.entrySet());
       subelements.addAll(broadcastReceiversNeeded.entrySet());
-      
-      
+
+
       // If any component needs to register additional activities or
       // broadcast receivers, insert them into the manifest here.
       if (!subelements.isEmpty()) {
         for (Map.Entry<String, Set<String>> componentSubElSetPair : subelements) {
           Set<String> subelementSet = componentSubElSetPair.getValue();
           for (String subelement : subelementSet) {
+            if (isForCompanion && !includeDangerousPermissions &&
+                subelement.contains("android.provider.Telephony.SMS_RECEIVED")) {
+              continue;
+            }
             out.write(subelement);
           }
         }
       }
-  
+
       // TODO(Will): Remove the following legacy code once the deprecated
       //             @SimpleBroadcastReceiver annotation is removed. It should
       //             should remain for the time being because otherwise we'll break
       //             extensions currently using @SimpleBroadcastReceiver.
-      
+
       // Collect any legacy simple broadcast receivers
       Set<String> simpleBroadcastReceivers = Sets.newHashSet();
       for (String componentType : componentBroadcastReceiver.keySet()) {
         simpleBroadcastReceivers.addAll(componentBroadcastReceiver.get(componentType));
       }
-      
+
       // The format for each legacy Broadcast Receiver in simpleBroadcastReceivers is
       // "className,Action1,Action2,..." where the class name is mandatory, and
       // actions are optional (and as many as needed).
       for (String broadcastReceiver : simpleBroadcastReceivers) {
         String[] brNameAndActions = broadcastReceiver.split(",");
         if (brNameAndActions.length == 0) continue;
+        // Remove the SMS_RECEIVED broadcast receiver if we aren't including dangerous permissions
+        if (isForCompanion && !includeDangerousPermissions) {
+          boolean skip = false;
+          for (String action : brNameAndActions) {
+            if (action.equalsIgnoreCase("android.provider.Telephony.SMS_RECEIVED")) {
+              skip = true;
+              break;
+            }
+          }
+          if (skip) continue;
+        }
         out.write(
             "<receiver android:name=\"" + brNameAndActions[0] + "\" >\n");
         if (brNameAndActions.length > 1){
@@ -775,6 +1028,19 @@ public final class Compiler {
         }
         out.write("</receiver> \n");
       }
+
+      // Add the FileProvider because in Sdk >=24 we cannot pass file:
+      // URLs in intents (and in other contexts)
+
+      out.write("      <provider\n");
+      out.write("         android:name=\"android.support.v4.content.FileProvider\"\n");
+      out.write("         android:authorities=\"" + packageName + ".provider\"\n");
+      out.write("         android:exported=\"false\"\n");
+      out.write("         android:grantUriPermissions=\"true\">\n");
+      out.write("         <meta-data\n");
+      out.write("            android:name=\"android.support.FILE_PROVIDER_PATHS\"\n");
+      out.write("            android:resource=\"@xml/provider_paths\"/>\n");
+      out.write("      </provider>\n");
 
       out.write("  </application>\n");
       out.write("</manifest>\n");
@@ -793,6 +1059,7 @@ public final class Compiler {
    *
    * @param project  project to build
    * @param compTypes component types used in the project
+   * @param compBlocks component type mapped to blocks used in project
    * @param out  stdout stream for compiler messages
    * @param err  stderr stream for compiler messages
    * @param userErrors stream to write user-visible error messages
@@ -802,16 +1069,18 @@ public final class Compiler {
    * @throws JSONException
    * @throws IOException
    */
-  public static boolean compile(Project project, Set<String> compTypes,
+  public static boolean compile(Project project, Set<String> compTypes, Map<String, Set<String>> compBlocks,
                                 PrintStream out, PrintStream err, PrintStream userErrors,
-                                boolean isForCompanion, String keystoreFilePath,
-                                int childProcessRam, String dexCacheDir,
+                                boolean isForCompanion, boolean isForEmulator,
+                                boolean includeDangerousPermissions, String keystoreFilePath,
+                                int childProcessRam, String dexCacheDir, String outputFileName,
                                 BuildServer.ProgressReporter reporter) throws IOException, JSONException {
     long start = System.currentTimeMillis();
 
     // Create a new compiler instance for the compilation
-    Compiler compiler = new Compiler(project, compTypes, out, err, userErrors, isForCompanion,
-                                     childProcessRam, dexCacheDir, reporter);
+    Compiler compiler = new Compiler(project, compTypes, compBlocks, out, err, userErrors,
+        isForCompanion, isForEmulator, includeDangerousPermissions, childProcessRam, dexCacheDir,
+        reporter);
 
     compiler.generateAssets();
     compiler.generateActivities();
@@ -820,7 +1089,7 @@ public final class Compiler {
     compiler.generateNativeLibNames();
     compiler.generatePermissions();
     compiler.generateMinSdks();
-  
+
     // TODO(Will): Remove the following call once the deprecated
     //             @SimpleBroadcastReceiver annotation is removed. It should
     //             should remain for the time being because otherwise we'll break
@@ -851,9 +1120,26 @@ public final class Compiler {
     // Create values directory and style xml files
     out.println("________Creating style xml");
     File styleDir = createDir(resDir, "values");
+    File style11Dir = createDir(resDir, "values-v11");
+    File style14Dir = createDir(resDir, "values-v14");
     File style21Dir = createDir(resDir, "values-v21");
+    File style23Dir = createDir(resDir, "values-v23");
     if (!compiler.createValuesXml(styleDir, "") ||
-        !compiler.createValuesXml(style21Dir, "-v21")) {
+        !compiler.createValuesXml(style11Dir, "-v11") ||
+        !compiler.createValuesXml(style14Dir, "-v14") ||
+        !compiler.createValuesXml(style21Dir, "-v21") ||
+        !compiler.createValuesXml(style23Dir, "-v23")) {
+      return false;
+    }
+
+    out.println("________Creating provider_path xml");
+    File providerDir = createDir(resDir, "xml");
+    if (!compiler.createProviderXml(providerDir)) {
+      return false;
+    }
+
+    out.println("________Creating network_security_config xml");
+    if (!compiler.createNetworkConfigXml(providerDir)) {
       return false;
     }
 
@@ -940,8 +1226,11 @@ public final class Compiler {
 
     // Seal the apk with ApkBuilder
     out.println("________Invoking ApkBuilder");
-    String apkAbsolutePath = deployDir.getAbsolutePath() + SLASH +
-        project.getProjectName() + ".apk";
+    String fileName = outputFileName;
+    if (fileName == null) {
+      fileName = project.getProjectName() + ".apk";
+    }
+    String apkAbsolutePath = deployDir.getAbsolutePath() + SLASH + fileName;
     if (!compiler.runApkBuilder(apkAbsolutePath, tmpPackageName, dexedClassesDir)) {
       return false;
     }
@@ -949,15 +1238,15 @@ public final class Compiler {
       reporter.report(95);
     }
 
-    // Sign the apk file
-    out.println("________Signing the apk file");
-    if (!compiler.runJarSigner(apkAbsolutePath, keystoreFilePath)) {
-      return false;
-    }
-
     // ZipAlign the apk file
     out.println("________ZipAligning the apk file");
     if (!compiler.runZipAlign(apkAbsolutePath, tmpDir)) {
+      return false;
+    }
+
+    // Sign the apk file
+    out.println("________Signing the apk file");
+    if (!compiler.runApkSigner(apkAbsolutePath, keystoreFilePath)) {
       return false;
     }
 
@@ -1032,6 +1321,9 @@ public final class Compiler {
         apkBuilder.addFile(new File(dexedClassesDir + File.separator + "classes2.dex"),
           "classes2.dex");
       }
+      if (nativeLibsNeeded.size() != 0) { // Need to add native libraries...
+        apkBuilder.addNativeLibraries(libsDir);
+      }
       apkBuilder.sealApk();
       return true;
     } catch (Exception e) {
@@ -1049,16 +1341,18 @@ public final class Compiler {
    *
    * @param project  project to build
    * @param compTypes component types used in the project
+   * @param compBlocks component types mapped to blocks used in project
    * @param out  stdout stream for compiler messages
    * @param err  stderr stream for compiler messages
    * @param userErrors stream to write user-visible error messages
    * @param childProcessMaxRam  maximum RAM for child processes, in MBs.
    */
   @VisibleForTesting
-  Compiler(Project project, Set<String> compTypes, PrintStream out, PrintStream err,
-           PrintStream userErrors, boolean isForCompanion,
+  Compiler(Project project, Set<String> compTypes, Map<String, Set<String>> compBlocks, PrintStream out, PrintStream err,
+           PrintStream userErrors, boolean isForCompanion, boolean isForEmulator, boolean includeDangerousPermissions,
            int childProcessMaxRam, String dexCacheDir, BuildServer.ProgressReporter reporter) {
     this.project = project;
+    this.compBlocks = compBlocks;
 
     prepareCompTypes(compTypes);
     readBuildInfo();
@@ -1067,6 +1361,8 @@ public final class Compiler {
     this.err = err;
     this.userErrors = userErrors;
     this.isForCompanion = isForCompanion;
+    this.isForEmulator = isForEmulator;
+    this.includeDangerousPermissions = includeDangerousPermissions;
     this.childProcessRamMb = childProcessMaxRam;
     this.dexCacheDir = dexCacheDir;
     this.reporter = reporter;
@@ -1249,47 +1545,6 @@ public final class Compiler {
     return true;
   }
 
-  private boolean runJarSigner(String apkAbsolutePath, String keystoreAbsolutePath) {
-    // TODO(user): maybe make a command line flag for the jarsigner location
-    String javaHome = System.getProperty("java.home");
-    // This works on Mac OS X.
-    File jarsignerFile = new File(javaHome + SLASH + "bin" +
-        SLASH + "jarsigner");
-    if (!jarsignerFile.exists()) {
-      // This works when a JDK is installed with the JRE.
-      jarsignerFile = new File(javaHome + SLASH + ".." + SLASH + "bin" +
-          SLASH + "jarsigner");
-      if (System.getProperty("os.name").startsWith("Windows")) {
-        jarsignerFile = new File(javaHome + SLASH + ".." + SLASH + "bin" +
-            SLASH + "jarsigner.exe");
-      }
-      if (!jarsignerFile.exists()) {
-        LOG.warning("YAIL compiler - could not find jarsigner.");
-        err.println("YAIL compiler - could not find jarsigner.");
-        userErrors.print(String.format(ERROR_IN_STAGE, "JarSigner"));
-        return false;
-      }
-    }
-
-    String[] jarsignerCommandLine = {
-        jarsignerFile.getAbsolutePath(),
-        "-digestalg", "SHA1",
-        "-sigalg", "MD5withRSA",
-        "-keystore", keystoreAbsolutePath,
-        "-storepass", "android",
-        apkAbsolutePath,
-        "AndroidKey"
-    };
-    if (!Execution.execute(null, jarsignerCommandLine, System.out, System.err)) {
-      LOG.warning("YAIL compiler - jarsigner execution failed.");
-      err.println("YAIL compiler - jarsigner execution failed.");
-      userErrors.print(String.format(ERROR_IN_STAGE, "JarSigner"));
-      return false;
-    }
-
-    return true;
-  }
-
   private boolean runZipAlign(String apkAbsolutePath, File tmpDir) {
     // TODO(user): add zipalign tool appinventor->lib->android->tools->linux and windows
     // Need to make sure assets directory exists otherwise zipalign will fail.
@@ -1310,7 +1565,7 @@ public final class Compiler {
     }
     // TODO: create tmp file for zipaling result
     String zipAlignedPath = tmpDir.getAbsolutePath() + SLASH + "zipaligned.apk";
-    // zipalign -f -v 4 infile.zip outfile.zip
+    // zipalign -f 4 infile.zip outfile.zip
     String[] zipAlignCommandLine = {
         getResource(zipAlignTool),
         "-f",
@@ -1337,6 +1592,38 @@ public final class Compiler {
         ((System.currentTimeMillis() - startZipAlign) / 1000.0) + " seconds";
     out.println(zipALignTimeMessage);
     LOG.info(zipALignTimeMessage);
+    return true;
+  }
+
+  private boolean runApkSigner(String apkAbsolutePath, String keystoreAbsolutePath) {
+    int mx = childProcessRamMb - 200;
+    /*
+      apksigner sign\
+      --ks <keystore file>\
+      --ks-key-alias AndroidKey\
+      --ks-pass pass:android\
+      <APK>
+    */
+    String[] apksignerCommandLine = {
+      System.getProperty("java.home") + "/bin/java", "-jar",
+      "-mx" + mx + "M",
+      getResource(APKSIGNER_JAR), "sign",
+      "-ks", keystoreAbsolutePath,
+      "-ks-key-alias", "AndroidKey",
+      "-ks-pass", "pass:android",
+      apkAbsolutePath
+    };
+
+    long startApkSigner = System.currentTimeMillis();
+    if (!Execution.execute(null, apksignerCommandLine, System.out, System.err)) {
+      LOG.warning("YAIL compiler - apksigner execution failed.");
+      err.println("YAIL compiler - apksigner execution failed.");
+      userErrors.print(String.format(ERROR_IN_STAGE, "APKSIGNER"));
+      return false;
+    }
+    String apkSignerTimeMessage = "APKSIGNER time: " + ((System.currentTimeMillis() - startApkSigner) / 1000.0) + " seconds";
+    out.println(apkSignerTimeMessage);
+    LOG.info(apkSignerTimeMessage);
     return true;
   }
 
@@ -1485,7 +1772,7 @@ public final class Compiler {
 
   private boolean runAaptPackage(File manifestFile, File resDir, String tmpPackageName, File sourceOutputDir, File symbolOutputDir) {
     // Need to make sure assets directory exists otherwise aapt will fail.
-    createDir(project.getAssetsDirectory());
+    final File mergedAssetsDir = createDir(project.getBuildDirectory(), ASSET_DIR_NAME);
     String aaptTool;
     String osName = System.getProperty("os.name");
     if (osName.equals("Mac OS X")) {
@@ -1516,7 +1803,7 @@ public final class Compiler {
     aaptPackageCommandLineArgs.add("-S");
     aaptPackageCommandLineArgs.add(mergedResDir.getAbsolutePath());
     aaptPackageCommandLineArgs.add("-A");
-    aaptPackageCommandLineArgs.add(project.getAssetsDirectory().getAbsolutePath());
+    aaptPackageCommandLineArgs.add(mergedAssetsDir.getAbsolutePath());
     aaptPackageCommandLineArgs.add("-I");
     aaptPackageCommandLineArgs.add(getResource(ANDROID_RUNTIME));
     aaptPackageCommandLineArgs.add("-F");
@@ -1531,11 +1818,12 @@ public final class Compiler {
       aaptPackageCommandLineArgs.add(packageName);
       aaptPackageCommandLineArgs.add("--output-text-symbols");
       aaptPackageCommandLineArgs.add(symbolOutputDir.getAbsolutePath());
+      aaptPackageCommandLineArgs.add("--no-version-vectors");
       appRJava = new File(sourceOutputDir, packageName.replaceAll("\\.", "/") + "/R.java");
       appRTxt = new File(symbolOutputDir, "R.txt");
     }
-    aaptPackageCommandLineArgs.add(libsDir.getAbsolutePath());
     String[] aaptPackageCommandLine = aaptPackageCommandLineArgs.toArray(new String[aaptPackageCommandLineArgs.size()]);
+    libSetup();                 // Setup /tmp/lib64 on Linux
     long startAapt = System.currentTimeMillis();
     // Using System.err and System.out on purpose. Don't want to pollute build messages with
     // tools output
@@ -1562,18 +1850,37 @@ public final class Compiler {
     libsDir = createDir(buildDir, LIBS_DIR_NAME);
     File armeabiDir = createDir(libsDir, ARMEABI_DIR_NAME);
     File armeabiV7aDir = createDir(libsDir, ARMEABI_V7A_DIR_NAME);
+    File arm64V8aDir = createDir(libsDir, ARM64_V8A_DIR_NAME);
+    File x8664Dir = createDir(libsDir, X86_64_DIR_NAME);
 
     try {
       for (String type : nativeLibsNeeded.keySet()) {
         for (String lib : nativeLibsNeeded.get(type)) {
-          boolean isV7a = lib.endsWith(ARMEABI_V7A_SUFFIX);
+          boolean isV7a = lib.endsWith(ComponentDescriptorConstants.ARMEABI_V7A_SUFFIX);
+          boolean isV8a = lib.endsWith(ComponentDescriptorConstants.ARM64_V8A_SUFFIX);
+          boolean isx8664 = lib.endsWith(ComponentDescriptorConstants.X86_64_SUFFIX);
 
-          String sourceDirName = isV7a ? ARMEABI_V7A_DIR_NAME : ARMEABI_DIR_NAME;
-          File targetDir = isV7a ? armeabiV7aDir : armeabiDir;
-          lib = isV7a ? lib.substring(0, lib.length() - ARMEABI_V7A_SUFFIX.length()) : lib;
+          String sourceDirName;
+          File targetDir;
+          if (isV7a) {
+            sourceDirName = ARMEABI_V7A_DIR_NAME;
+            targetDir = armeabiV7aDir;
+            lib = lib.substring(0, lib.length() - ComponentDescriptorConstants.ARMEABI_V7A_SUFFIX.length());
+          } else if (isV8a) {
+            sourceDirName = ARM64_V8A_DIR_NAME;
+            targetDir = arm64V8aDir;
+            lib = lib.substring(0, lib.length() - ComponentDescriptorConstants.ARM64_V8A_SUFFIX.length());
+          } else if (isx8664) {
+            sourceDirName = X86_64_DIR_NAME;
+            targetDir = x8664Dir;
+            lib = lib.substring(0, lib.length() - ComponentDescriptorConstants.X86_64_SUFFIX.length());
+          } else {
+            sourceDirName = ARMEABI_DIR_NAME;
+            targetDir = armeabiDir;
+          }
 
           String sourcePath = "";
-          String pathSuffix = RUNTIME_FILES_DIR + sourceDirName + SLASH + lib;
+          String pathSuffix = RUNTIME_FILES_DIR + sourceDirName + ZIPSLASH + lib;
 
           if (simpleCompTypes.contains(type)) {
             sourcePath = getResource(pathSuffix);
@@ -1610,6 +1917,9 @@ public final class Compiler {
     explodedAarLibs = new AARLibraries(genSrcDir);
     final Set<String> processedLibs = new HashSet<>();
 
+    // Attach the Android support libraries (needed by every app)
+    libsNeeded.put("ANDROID", new HashSet<>(Arrays.asList(SUPPORT_AARS)));
+
     // walk components list for libraries ending in ".aar"
     try {
       for (Set<String> libs : libsNeeded.values()) {
@@ -1637,31 +1947,44 @@ public final class Compiler {
   }
 
   private boolean attachCompAssets() {
-    createDir(project.getAssetsDirectory()); // Needed to insert resources.
+    createDir(project.getBuildDirectory()); // Needed to insert resources.
     try {
       // Gather non-library assets to be added to apk's Asset directory.
       // The assets directory have been created before this.
-      File compAssetDir = createDir(project.getAssetsDirectory(),
-          ASSET_DIRECTORY);
+      File mergedAssetDir = createDir(project.getBuildDirectory(), ASSET_DIR_NAME);
 
+      // Copy component/extension assets to build/assets
       for (String type : assetsNeeded.keySet()) {
         for (String assetName : assetsNeeded.get(type)) {
-          File targetDir = compAssetDir;
-          String sourcePath = "";
-          String pathSuffix = RUNTIME_FILES_DIR + assetName;
+          File targetDir = mergedAssetDir;
+          String sourcePath;
 
           if (simpleCompTypes.contains(type)) {
+            String pathSuffix = RUNTIME_FILES_DIR + assetName;
             sourcePath = getResource(pathSuffix);
           } else if (extCompTypes.contains(type)) {
-            sourcePath = getExtCompDirPath(type) + pathSuffix;
-            targetDir = createDir(targetDir, EXT_COMPS_DIR_NAME);
-            targetDir = createDir(targetDir, type);
+            final String extCompDir = getExtCompDirPath(type);
+            sourcePath = getExtAssetPath(extCompDir, assetName);
+            // If targetDir's location is changed here, you must update Form.java in components to
+            // reference the new location. The path for assets in compiled apps is assumed to be
+            // assets/EXTERNAL-COMP-PACKAGE/ASSET-NAME
+            targetDir = createDir(targetDir, basename(extCompDir));
           } else {
             userErrors.print(String.format(ERROR_IN_STAGE, "Assets"));
             return false;
           }
 
           Files.copy(new File(sourcePath), new File(targetDir, assetName));
+        }
+      }
+
+      // Copy project assets to build/assets
+      File[] assets = project.getAssetsDirectory().listFiles();
+      if (assets != null) {
+        for (File asset : assets) {
+          if (asset.isFile()) {
+            Files.copy(asset, new File(mergedAssetDir, asset.getName()));
+          }
         }
       }
       return true;
@@ -1742,6 +2065,31 @@ public final class Compiler {
         resources.put(resourcePath, file);
       }
       return file.getAbsolutePath();
+    } catch (NullPointerException e) {
+      throw new IllegalStateException("Unable to find required library: " + resourcePath, e);
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  /*
+   * This code is only invoked on Linux. It copies libc++.so into /tmp/lib64. This
+   * is needed on linux to run the aapt tool.
+   */
+  private void libSetup() {
+    String osName = System.getProperty("os.name");
+    if (!osName.equals("Linux")) {
+      return;                   // Nothing to do (yet) for MacOS and Windows
+    }
+    try {
+      File outFile = new File("/tmp/lib64/libc++.so");
+      if (outFile.exists()) {    // Don't do it more then once!
+        return;
+      }
+      File tmpLibDir = new File("/tmp/lib64");
+      tmpLibDir.mkdirs();
+      Files.copy(Resources.newInputStreamSupplier(Compiler.class.getResource("/tools/linux/lib64/libc++.so")),
+        outFile);
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
@@ -1774,7 +2122,7 @@ public final class Compiler {
           if (e.getMessage().contains("broadcastReceiver")) {
             LOG.log(Level.INFO, "Component \"" + type + "\" does not have a broadcast receiver.");
             continue;
-          } else if (e.getMessage().contains(ANDROIDMINSDK_TARGET)) {
+          } else if (e.getMessage().contains(ComponentDescriptorConstants.ANDROIDMINSDK_TARGET)) {
             LOG.log(Level.INFO, "Component \"" + type + "\" does not specify a minimum SDK.");
             continue;
           } else {
@@ -1796,6 +2144,44 @@ public final class Compiler {
 
         if (!infoSet.isEmpty()) {
           infoMap.put(type, infoSet);
+        }
+
+        processConditionalInfo(compJson, type, targetInfo);
+      }
+    }
+  }
+
+  /**
+   * Processes the conditional info from simple_components_build_info.json into
+   * a structure mapping annotation types to component names to block names to
+   * values.
+   *
+   * @param compJson Parsed component data from JSON
+   * @param type The name of the type being processed
+   * @param targetInfo Name of the annotation target being processed (e.g.,
+   *                   permissions). Any of: PERMISSIONS_TARGET,
+   *                   BROADCAST_RECEIVERS_TARGET
+   */
+  private void processConditionalInfo(JSONObject compJson, String type, String targetInfo) {
+    // Strip off the package name since SCM and BKY use unqualified names
+    type = type.substring(type.lastIndexOf('.') + 1);
+
+    JSONObject conditionals = compJson.optJSONObject(ComponentDescriptorConstants.CONDITIONALS_TARGET);
+    if (conditionals != null) {
+      JSONObject jsonBlockMap = conditionals.optJSONObject(targetInfo);
+      if (jsonBlockMap != null) {
+        if (!this.conditionals.containsKey(targetInfo)) {
+          this.conditionals.put(targetInfo, new HashMap<String, Map<String, Set<String>>>());
+        }
+        Map<String, Set<String>> blockMap = new HashMap<>();
+        this.conditionals.get(targetInfo).put(type, blockMap);
+        for (String key : (List<String>) Lists.newArrayList(jsonBlockMap.keys())) {
+          JSONArray data = jsonBlockMap.optJSONArray(key);
+          HashSet<String> result = new HashSet<>();
+          for (int i = 0; i < data.length(); i++) {
+            result.add(data.optString(i));
+          }
+          blockMap.put(key, result);
         }
       }
     }
@@ -1952,5 +2338,13 @@ public final class Compiler {
       return candidate;
     }
     throw new IllegalStateException("Project lacks extension directory for " + type);
+  }
+
+  private static String basename(String path) {
+    return new File(path).getName();
+  }
+
+  private static String getExtAssetPath(String extCompDir, String assetName) {
+    return extCompDir + File.separator + ASSET_DIR_NAME + File.separator + assetName;
   }
 }

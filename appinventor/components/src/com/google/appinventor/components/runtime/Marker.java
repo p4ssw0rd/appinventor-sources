@@ -40,7 +40,6 @@ import android.util.Log;
         "can be used to provide an info window, custom fill and stroke colors, and custom " +
         "images to convey information to the user.</p>")
 @SimpleObject
-@UsesAssets(fileNames = "marker.svg")
 @UsesLibraries(libraries = "osmdroid.aar, androidsvg.jar")
 public class Marker extends MapFeatureBaseWithFill implements MapMarker {
   private static final String TAG = Marker.class.getSimpleName();
@@ -377,7 +376,7 @@ public class Marker extends MapFeatureBaseWithFill implements MapMarker {
   }
 
   @SuppressWarnings("squid:S00100")
-  @SimpleFunction(description = "Compute the distance, in meters, between a map feature and a " +
+  @SimpleFunction(description = "Compute the distance, in meters, between a Marker and a " +
       "latitude, longitude point.")
   public double DistanceToPoint(double latitude, double longitude) {
     return GeometryUtil.distanceBetween(this, new GeoPoint(latitude, longitude));

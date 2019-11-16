@@ -12,6 +12,7 @@ import com.google.appinventor.client.editor.simple.SimpleComponentDatabase;
 import com.google.appinventor.client.ComponentsTranslation;
 import com.google.appinventor.client.Images;
 import com.google.appinventor.client.Ode;
+import com.google.appinventor.client.editor.ProjectEditor;
 import com.google.appinventor.client.editor.simple.SimpleEditor;
 import com.google.appinventor.client.editor.simple.components.utils.PropertiesUtil;
 import com.google.appinventor.client.editor.youngandroid.YaBlocksEditor;
@@ -35,13 +36,10 @@ import com.google.appinventor.shared.rpc.project.ProjectNode;
 import com.google.appinventor.shared.rpc.project.youngandroid.YoungAndroidAssetsFolder;
 import com.google.appinventor.shared.rpc.project.youngandroid.YoungAndroidProjectNode;
 import com.google.appinventor.shared.settings.SettingsConstants;
-import com.google.appinventor.shared.simple.ComponentDatabaseInterface;
 import com.google.appinventor.shared.storage.StorageUtil;
 import com.google.gwt.event.dom.client.ClickEvent;
 import com.google.gwt.event.dom.client.ClickHandler;
 import com.google.gwt.event.dom.client.DomEvent;
-import com.google.gwt.event.dom.client.FocusEvent;
-import com.google.gwt.event.dom.client.FocusHandler;
 import com.google.gwt.event.dom.client.HasAllTouchHandlers;
 import com.google.gwt.event.dom.client.KeyCodes;
 import com.google.gwt.event.dom.client.KeyUpEvent;
@@ -66,6 +64,7 @@ import com.google.gwt.user.client.Window;
 import com.google.gwt.user.client.ui.Button;
 import com.google.gwt.user.client.ui.Composite;
 import com.google.gwt.user.client.ui.DialogBox;
+import com.google.gwt.user.client.ui.Focusable;
 import com.google.gwt.user.client.ui.HTML;
 import com.google.gwt.user.client.ui.HorizontalPanel;
 import com.google.gwt.user.client.ui.Image;
@@ -75,7 +74,6 @@ import com.google.gwt.user.client.ui.SourcesMouseEvents;
 import com.google.gwt.user.client.ui.TreeItem;
 import com.google.gwt.user.client.ui.VerticalPanel;
 import com.google.gwt.user.client.ui.Widget;
-import com.google.gwt.user.client.ui.impl.ClippedImagePrototype;
 import com.google.appinventor.shared.simple.ComponentDatabaseInterface.ComponentDefinition;
 import com.google.appinventor.shared.simple.ComponentDatabaseInterface.PropertyDefinition;
 
@@ -99,9 +97,6 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
   // Common property names (not all components support all properties).
   public static final String PROPERTY_NAME_NAME = "Name";
   public static final String PROPERTY_NAME_UUID = "Uuid";
-  protected static final List<String> YAIL_NAMES = Arrays.asList("CsvUtil", "Double", "Float",
-    "Integer", "JavaCollection", "JavaIterator", "KawaEnvironment", "Long", "Short",
-    "SimpleForm", "String", "Pattern", "YailList", "YailNumberToString", "YailRuntimeError");
   private static final int ICON_IMAGE_WIDTH = 16;
   private static final int ICON_IMAGE_HEIGHT = 16;
   public static final int BORDER_SIZE = 2 + 2; // see ode-SimpleMockComponent in Ya.css
@@ -198,8 +193,8 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
       }
 
       // Check that it is a variable name used in the Yail code
-      if (YAIL_NAMES.contains(newName)) {
-        Window.alert(MESSAGES.badComponentNameError());
+      if (TextValidators.isReservedName(newName)) {
+        Window.alert(MESSAGES.reservedNameError());
         return false;
       }
 
@@ -746,6 +741,28 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
     return container;
   }
 
+  private final Focusable nullFocusable = new Focusable() {
+    @Override
+    public int getTabIndex() {
+      return 0;
+    }
+
+    @Override
+    public void setAccessKey(char key) {
+
+    }
+
+    @Override
+    public void setFocus(boolean focused) {
+
+    }
+
+    @Override
+    public void setTabIndex(int index) {
+
+    }
+  };
+
   /**
    * Constructs a tree item for the component which will be displayed in the
    * source structure explorer.
@@ -758,7 +775,12 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
     // used to get HTML for the iconImage. AbstractImagePrototype requires
     // an ImageResource, which we don't necessarily have.
     TreeItem itemNode = new TreeItem(
-        new HTML("<span>" + iconImage.getElement().getString() + getName() + "</span>"));
+        new HTML("<span>" + iconImage.getElement().getString() + getName() + "</span>")) {
+      @Override
+      protected Focusable getFocusable() {
+        return nullFocusable;
+      }
+    };
     itemNode.setUserObject(sourceStructureExplorerItem);
     return itemNode;
   }
@@ -1002,11 +1024,8 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
       // If this component's visible property is false, we need to check whether to show hidden
       // components.
       if (!visible) {
-        boolean showHiddenComponents = Boolean.parseBoolean(
-            editor.getProjectEditor().getProjectSettingsProperty(
-            SettingsConstants.PROJECT_YOUNG_ANDROID_SETTINGS,
-            SettingsConstants.YOUNG_ANDROID_SETTINGS_SHOW_HIDDEN_COMPONENTS));
-        return showHiddenComponents;
+        YaFormEditor formEditor = (YaFormEditor) editor;
+        return formEditor.shouldDisplayHiddenComponents();
       }
     }
     return true;
@@ -1074,7 +1093,6 @@ public abstract class MockComponent extends Composite implements PropertyChangeL
   }
 
   public void delete() {
-    OdeLog.log("Got delete component for " + this.getName());
     this.editor.getProjectEditor().clearLocation(getName());
     getForm().select();
     // Pass true to indicate that the component is being permanently deleted.

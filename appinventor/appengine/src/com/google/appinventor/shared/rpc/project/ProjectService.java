@@ -80,6 +80,18 @@ public interface ProjectService extends RemoteService {
   void deleteProject(long projectId);
 
   /**
+   * Moves the project to trash.
+   * @param projectId  project ID
+   */
+  UserProject moveToTrash(long projectId);
+
+  /**
+   * Moves the project to trash.
+   * @param projectId  project ID
+   */
+  UserProject restoreProject(long projectId);
+
+  /**
    * On publish this sets the project's gallery id
    * @param projectId  project ID
    * @param galleryId  gallery ID
@@ -281,10 +293,11 @@ public interface ProjectService extends RemoteService {
    * @param projectId  project ID
    * @param nonce used to access the built project -- random string
    * @param target  build target (optional, implementation dependent)
+   * @param secondBuildserver whether to use the second buildserver
    *
    * @return  results of invoking the build command
    */
-  RpcResult build(long projectId, String nonce, String target);
+  RpcResult build(long projectId, String nonce, String target, boolean secondBuildserver);
 
   /**
    * Gets the result of a build command for the project from the back-end.
